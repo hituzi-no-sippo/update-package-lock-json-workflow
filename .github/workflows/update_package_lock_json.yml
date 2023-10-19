@@ -1,0 +1,177 @@
+---
+name: Update `package-lock.json`
+
+on:
+  workflow_call:
+    inputs:
+      commit_message:
+        required: true
+        type: string
+        description: |
+          Message of commit
+
+          - Tagret Repository
+            The repository running the workflow
+          - Tagret branch
+            The branch running the workflow
+
+      timeout_minutes:
+        required: true
+        type: number
+        description: |
+          The maximum number of minutes to let a job run before
+          GitHub automatically cancels job.
+
+    secrets:
+      # Cannot use `github_token`.
+      # This is because `secrets.github_token` is system reserved name.
+      gh_token:
+        required: false
+        description: |
+          GitHub Token is used on commit.
+
+          If use `secrets.GITHUB_TOKEN`, add `write` access of contents.
+          This is because to commit need to `write` access of contents.
+
+          ```YAML
+          jobs:
+            commit:
+              name: commit
+              permissions:
+                contents: write
+          ```
+
+          - https://docs.github.com/en/actions/security-guides/automatic-token-authentication#permissions-for-the-github_token
+          - https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#permissions
+          - https://docs.github.com/en/rest/overview/permissions-required-for-github-apps?apiVersion=2022-11-28#repository-permissions-for-contents
+
+          Requires a GitHub Token.
+
+          The GitHub token used depends on whether `secrets.gh_token` is inputed.
+
+          - Input `secrets.gh_token`
+            Use `secrets.gh_token`.
+
+            ```YAML
+            jobs:
+              update-gemifle-lock:
+                uses: hituzi-no-sippo/update-gemifle-lock-workflow@v1.0.0
+                with:
+                  commit_message: "chore(deps): Update package-lock.json"
+                secrets:
+                  gh_token: <GITHUB_TOKEN>
+            ```
+
+          - Does not input `secrets.gh_token`
+            Generate a GitHub Token with GitHub App.
+            Use `secrets.github_app_id` and `secrets.github_app_private_key`.
+
+            ```YAML
+            jobs:
+              update-gemifle-lock:
+                uses: hituzi-no-sippo/update-gemifle-lock-workflow@v1.0.0
+                with:
+                  commit_message: "chore(deps): Update package-lock.json"
+                secrets:
+                  github_app_id: <GITHUB_APP_ID>
+                  github_app_private_key: <GITHUB_APP_PRIVATE_KEY>
+            ```
+
+          GitHub Token generated with GitHub App Triggers GitHub Actions workflow.
+          `secrets.GITHUB_TOKEN` does not trigger GitHub Actions workflow.
+          https://docs.github.com/en/actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow
+          > When you use the repository's `GITHUB_TOKEN` to perform tasks,
+          > events triggered by the `GITHUB_TOKEN`,
+          > with the exception of `workflow_dispatch` and `repository_dispatch`,
+          > will not create a new workflow run.
+
+      github_app_id:
+        required: false
+        description: |
+          GitHub App ID to generate GitHub token.
+          Generated GitHub Token is used on commit.
+
+          The GitHub App of `secrets.github_app_id` and `secrets.github_app_private_key`
+          requires `Read and write` access of contents.
+          This is because this workflow create commit to update `package-lock.json`.
+
+          References
+          - https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app
+          - https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/managing-private-keys-for-github-apps#generating-private-keys
+          - https://docs.github.com/en/rest/overview/permissions-required-for-github-apps#repository-permissions-for-contents
+
+      github_app_private_key:
+        required: false
+        description: |
+          GitHub App Private Key to generate GitHub token.
+          Generated GitHub Token is used on commit.
+
+defaults:
+  run:
+    shell: bash
+
+permissions: {}
+
+jobs:
+  update-packge-lock-json:
+    name: Update `package-lock.json`
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    steps:
+      - name: Runtime security for GitHub
+        # yamllint disable-line rule:line-length
+        uses: step-security/harden-runner@1b05615854632b887b69ae1be8cbefe72d3ae423 # v2.6.0
+        with:
+          disable-sudo: true
+          # Because
+          # - Run `bundle config set --local frozen 'false'`
+          # - Update `package-lock.json` with `Update package-lock.json` action
+          disable-file-monitoring: true
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+            github.com:443
+            objects.githubusercontent.com:443
+            registry.npmjs.org:443
+
+      - name: Checkout
+        # yamllint disable-line rule:line-length
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+      - name: Setup Node
+        # yamllint disable-line rule:line-length
+        uses: actions/setup-node@5e21ff4d9bc1a8cf6de233a3057d20ec6b3fb69d # v3.8.1
+        with:
+          check-latest: false
+          # Decide node version fron `engines.node` in `package.json`
+          # https://github.com/actions/setup-node/blob/5e21ff4d9bc1a8cf6de233a3057d20ec6b3fb69d/docs/advanced-usage.md#node-version-file
+          # v3.8.1 Commit on 2023-09-15
+          node-version-file: package.json
+          cache: npm
+
+      - name: Update `package-lock.json` with npm
+        run: npm install --package-lock-only
+
+      - name: Detect `package-lock.json` changed
+        id: detect_changed
+        run: |
+          if git diff --exit-code --color=always package-lock.json; then
+            echo '::notice file=package-lock.json::package-lock.json is latest.'
+
+            exit 0
+          fi
+
+          echo '::warning file=package-lock.json::package-lock.json is not latest.'
+
+          echo "has_changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit to update `package-lock.json`
+        if: ${{ steps.detect_changed.outputs.has_changed }}
+        # yamllint disable-line rule:line-length
+        uses: hituzi-no-sippo/commit-with-ghcp-action@462c3c7824f1bbcc60ad5a46e26a1fbae694fcf2
+        with:
+          files: package-lock.json
+          commit_message: ${{ inputs.commit_message }}
+          github_token: ${{ secrets.gh_token }}
+          github_app_id: ${{ secrets.github_app_id }}
+          github_app_private_key: ${{ secrets.github_app_private_key }}
